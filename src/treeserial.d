@@ -6,6 +6,7 @@ import std.bitmanip;
 
 import std.algorithm;
 import std.range;
+import std.conv;
 
 struct NoLength {
 	bool value = true;
@@ -22,28 +23,32 @@ struct ElementAttributes(Attribs...) {
 	alias Attributes = Attribs;
 }
 
+struct Include {
+	bool value = true;
+}
+enum Exclude = Include(false);
+
 alias DefaultAttributes = AliasSeq!(NoLength(false), LengthType!ushort);
 
 
-template Serializer(Attributes_...) {
-	alias Attributes = AliasSeq!(DefaultAttributes, Attributes_);
+template Serializer(Attributes...) {
 	
-	template Subserializer(MoreAttributes_...) {
-		alias Subserializer = Serializer!(Attributes_, MoreAttributes_);
+	template Subserializer(MoreAttributes...) {
+		alias Subserializer = Serializer!(Attributes, MoreAttributes);
 	}
 	alias Subdeserializer = Subserializer;
 	
-	template isAttribute(alias T) {
-		enum isAttribute = Filter!(isDesiredUDA!T, Attributes).length > 0;
+	template isAttribute(alias T, AddedDefaults...) {
+		enum isAttribute = Filter!(isDesiredUDA!T, AliasSeq!(DefaultAttributes, AddedDefaults, Attributes)).length > 0;
 	}
-	template GetAttributeType(alias T) {
-		alias GetAttributeType = Filter!(isDesiredUDA!T, Attributes)[$-1].Type;
+	template GetAttributeType(alias T, AddedDefaults...) {
+		alias GetAttributeType = Filter!(isDesiredUDA!T, AliasSeq!(DefaultAttributes, AddedDefaults, Attributes))[$-1].Type;
 	}
-	template getAttributeValue(alias T) {
-		static if (is(Filter!(isDesiredUDA!T, Attributes)[$-1]))// For if the struct is not created but referencing the type: instantiate it, and use the default.
-			enum getAttributeValue = Filter!(isDesiredUDA!T, Attributes)[$-1]().value;
+	template getAttributeValue(alias T, AddedDefaults...) {
+		static if (is(Filter!(isDesiredUDA!T, AliasSeq!(DefaultAttributes, AddedDefaults, Attributes))[$-1]))// For if the struct is not created but referencing the type: instantiate it, and use the default.
+			enum getAttributeValue = Filter!(isDesiredUDA!T, AliasSeq!(DefaultAttributes, AddedDefaults, Attributes))[$-1]().value;
 		else
-			enum getAttributeValue = Filter!(isDesiredUDA!T, Attributes)[$-1].value;
+			enum getAttributeValue = Filter!(isDesiredUDA!T, AliasSeq!(DefaultAttributes, AddedDefaults, Attributes))[$-1].value;
 	}
 	template GetAttributes(alias T) {
 		template Get(alias EA) {
@@ -51,41 +56,91 @@ template Serializer(Attributes_...) {
 		}
 		alias GetAttributes = staticMap!(Get, Filter!(isDesiredUDA!T, Attributes));
 	}
-	template FilterOut_(alias T) {
-		alias FilterOut_ = Filter!(templateNot!(isDesiredUDA!T), Attributes_);
+	template FilterOut(alias T) {
+		alias FilterOut = Filter!(templateNot!(isDesiredUDA!T), Attributes);
 	}
 	
 	static if (isAttribute!CastType) {
-		ubyte[] serialize(T)(T data) if (__traits(compiles, cast(GetAttributeType!CastType) rvalueOf!T) && serializable!(GetAttributeType!CastType)) {
-			return Serializer!(FilterOut_!CastType).serialize(cast(GetAttributeType!CastType) data);
+		ubyte[] serialize(T)(T value) if (__traits(compiles, cast(GetAttributeType!CastType) rvalueOf!T) && serializable!(GetAttributeType!CastType)) {
+			return Serializer!(FilterOut!CastType).serialize(cast(GetAttributeType!CastType) value);
 		}
-		T deserialize(T)(ref const(ubyte)[] data) if (__traits(compiles, cast(T) rvalueOf!(GetAttributeType!CastType)) && deserializable!(GetAttributeType!CastType)) {
-			return cast(T) Serializer!(FilterOut_!CastType).deserialize!(GetAttributeType!CastType)(data);
+		T deserialize(T)(ref const(ubyte)[] value) if (__traits(compiles, cast(T) rvalueOf!(GetAttributeType!CastType)) && deserializable!(GetAttributeType!CastType)) {
+			return cast(T) Serializer!(FilterOut!CastType).deserialize!(GetAttributeType!CastType)(value);
 		}
 	}
 	else {
-		ubyte[] serialize(T)(T data) if(isIntegral!T || isSomeChar!T || isBoolean!T || isFloatOrDouble!T) {
-			return nativeToLittleEndian(data).dup;
+		ubyte[] serialize(T)(T value) if(isIntegral!T || isSomeChar!T || isBoolean!T || isFloatOrDouble!T) {
+			return nativeToLittleEndian(value).dup;
 		}
-		ubyte[] serialize(T)(T data) if(isDynamicArray!T) {
-			alias Serializer_ = Serializer!(FilterOut_!ElementAttributes, GetAttributes!ElementAttributes);
-			static if (getAttributeValue!NoLength)
-				return data.map!(Serializer_.serialize).joiner.array;
+		ubyte[] serialize(T)(T value) if(isDynamicArray!T || isStaticArray!T) {
+			alias Serializer_ = Serializer!(FilterOut!ElementAttributes, GetAttributes!ElementAttributes);
+			static if (isStaticArray!T || getAttributeValue!NoLength)
+				return value[].map!(Serializer_.serialize).joiner.array;
 			else
-				return serialize(cast(GetAttributeType!LengthType) data.length) ~ data.map!(Serializer_.serialize).joiner.array;
+				return serialize(cast(GetAttributeType!LengthType) value.length) ~ value.map!(Serializer_.serialize).joiner.array;
+		}
+		const(ubyte)[] serialize(T)(T value) if(is(T == class) || is(T == struct)) {
+			static if(__traits(hasMember, T, "serialize")) {
+				return value.serialize;
+			}
+			else {
+				const(ubyte)[] bytes;
+				foreach (memName; __traits(derivedMembers, T)) {{
+					static if (memName != "this") {
+						alias mem = __traits(getMember, T, memName);
+						alias Mem = typeof(mem);
+						static if (Subserializer!(__traits(getAttributes, mem)).getAttributeValue!(Include, Include(
+							!isCallable!mem
+							&& !__traits(compiles, { mixin("auto test=T." ~ memName ~ ";"); })	// static members
+						))) {
+							bytes ~= Serializer!(Serializer!(FilterOut!ElementAttributes).FilterOut!Include, GetAttributes!ElementAttributes).serialize(mixin("value."~memName));
+						}
+					}
+				}}
+				return bytes;
+			}
 		}
 		
-		T deserialize(T)(ref const(ubyte)[] data) if (isIntegral!T || isSomeChar!T || isBoolean!T || isFloatOrDouble!T) {
+		T deserialize(T)(ref const(ubyte)[] buffer) if (isIntegral!T || isSomeChar!T || isBoolean!T || isFloatOrDouble!T) {
 			scope (success)
-				data = data[T.sizeof..$];
-			return littleEndianToNative!T(data[0..T.sizeof]);
+				buffer = buffer[T.sizeof..$];
+			return littleEndianToNative!T(buffer[0..T.sizeof]);
 		}
-		T deserialize(T)(ref const(ubyte)[] data) if (isDynamicArray!T) {
-			alias Serializer_ = Serializer!(FilterOut_!ElementAttributes, GetAttributes!ElementAttributes);
-			static if (getAttributeValue!NoLength)
-				return repeat(null).map!(_=>Serializer_.deserialize!(ForeachType!T)(data)).until!((lazy _)=>data.length==0).array;
+		T deserialize(T)(ref const(ubyte)[] buffer) if (isDynamicArray!T || isStaticArray!T) {
+			alias Serializer_ = Serializer!(FilterOut!ElementAttributes, GetAttributes!ElementAttributes);
+			static if (isStaticArray!T)
+				return repeat(null, T.length).map!(_=>Serializer_.deserialize!(ForeachType!T)(buffer)).array.to!T;
+			else static if (getAttributeValue!NoLength)
+				return repeat(null).map!(_=>Serializer_.deserialize!(ForeachType!T)(buffer)).until!((lazy _)=>buffer.length==0).array;
 			else
-				return repeat(null, deserialize!(GetAttributeType!LengthType)(data)).map!(_=>Serializer_.deserialize!(ForeachType!T)(data)).array;
+				return repeat(null, deserialize!(GetAttributeType!LengthType)(buffer)).map!(_=>Serializer_.deserialize!(ForeachType!T)(buffer)).array;
+		}
+		T deserialize(T)(ref const(ubyte)[] buffer) if(is(T == class) || is(T == struct)) {
+			static if(__traits(hasMember, T, "deserialize")) {
+				return buffer.serialize;
+			}
+			else {
+				T value;
+				static if (is(T == class))
+					value = new T();
+				foreach (memName; __traits(derivedMembers, T)) {{
+					static if (memName != "this") {
+						alias mem = __traits(getMember, T, memName);
+						alias Mem = typeof(mem);
+						static if(isCallable!Mem)
+							alias MemT = ReturnType!Mem;
+						else
+							alias MemT = Mem;
+						static if (Subserializer!(__traits(getAttributes, mem)).getAttributeValue!(Include, Include(
+							!isCallable!mem
+							&& !__traits(compiles, { mixin("auto test=T." ~ memName ~ ";"); })	// static members
+						))) {
+							mixin(q{value.}~memName) = Serializer!(Serializer!(FilterOut!ElementAttributes).FilterOut!Include, GetAttributes!ElementAttributes).deserialize!MemT(buffer);
+						}
+					}
+				}}
+				return value;
+			}
 		}
 	}
 }
@@ -179,6 +234,48 @@ unittest {
 		const(ubyte)[] bytes = Serializer_.serialize(data);
 		assert(bytes == [2, 2,1,2, 2,3,4]);
 		assert(Serializer_.deserialize!(typeof(data))(bytes) == data);
+	}
+	// Static
+	{
+		int[2] data = [1,2];
+		const(ubyte)[] bytes = serialize(data);
+		assert(bytes == [1,0,0,0, 2,0,0,0] || bytes == [0,0,0,1, 0,0,0,2]);
+		assert(bytes.deserialize!(typeof(data)) == data);
+	}
+}
+@("class")
+unittest {
+	{
+		static class C {
+			ubyte a = 1;
+			ubyte b = 2;
+			@Exclude ubyte c = 3;
+			@property ubyte d() { return 4; }
+			@Include @property ubyte e() { return 5; } @Include @property void e(ubyte) {}
+			ubyte f() { return 6; }
+			@Include ubyte g() { return 7; } @Include void g(ubyte) {}
+			static ubyte h = 8;
+			@Include static ubyte i = 9;
+			static ubyte j() { return 10; }
+			@Include static ubyte k() { return 11; } @Include static void k(ubyte) {}
+		}
+		C data = new C;
+		const(ubyte)[] bytes = serialize(data);
+		assert(bytes == [1,2,5,7,9,11]);
+		
+		const(ubyte)[] nb = [11,22,55,77,99,110];
+		C nd = nb.deserialize!(typeof(data));
+		assert(nd.a == 11);
+		assert(nd.b == 22);
+		assert(nd.c == 3);
+		assert(nd.d == 4);
+		assert(nd.e == 5);
+		assert(nd.f == 6);
+		assert(nd.g == 7);
+		assert(nd.h == 8);
+		assert(nd.i == 99);
+		assert(nd.j == 10);
+		assert(nd.k == 11);
 	}
 }
 
