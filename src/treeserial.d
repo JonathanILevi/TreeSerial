@@ -79,12 +79,12 @@ template Serializer(Attributes...) {
 			else
 				return serialize(cast(GetAttributeType!LengthType) value.length) ~ value.map!(Serializer_.serialize).joiner.array;
 		}
-		const(ubyte)[] serialize(T)(T value) if(is(T == class) || is(T == struct)) {
+		ubyte[] serialize(T)(T value) if(is(T == class) || is(T == struct)) {
 			static if(__traits(hasMember, T, "serialize")) {
 				return value.serialize;
 			}
 			else {
-				const(ubyte)[] bytes;
+				ubyte[] bytes;
 				foreach (memName; __traits(derivedMembers, T)) {{
 					static if (memName != "this") {
 						alias mem = __traits(getMember, T, memName);
