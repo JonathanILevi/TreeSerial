@@ -111,7 +111,7 @@ template Serializer(Attributes...) {
 			static if (isStaticArray!T)
 				return repeat(null, T.length).map!(_=>Serializer_.deserialize!(ForeachType!T)(buffer)).array.to!T;
 			else static if (getAttributeValue!NoLength)
-				return repeat(null).map!(_=>Serializer_.deserialize!(ForeachType!T)(buffer)).until!((lazy _)=>buffer.length==0).array;
+				return repeat(null).map!(_=>Serializer!(FilterOut!NoLength).deserialize!(ForeachType!T)(buffer)).until!((lazy _)=>buffer.length==0).array;
 			else
 				return repeat(null, deserialize!(GetAttributeType!LengthType)(buffer)).map!(_=>Serializer_.deserialize!(ForeachType!T)(buffer)).array;
 		}
