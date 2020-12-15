@@ -74,10 +74,19 @@ template Serializer(Attributes...) {
 		}
 		ubyte[] serialize(T)(T value) if(isDynamicArray!T || isStaticArray!T) {
 			alias Serializer_ = Serializer!(FilterOut!ElementAttributes, GetAttributes!ElementAttributes);
-			static if (isStaticArray!T || getAttributeValue!NoLength)
-				return value[].map!(Serializer_.serialize).joiner.array;
-			else
-				return serialize(cast(GetAttributeType!LengthType) value.length) ~ value.map!(Serializer_.serialize).joiner.array;
+			static if (isSomeChar!(ForeachType!T)) {
+				import std.utf;
+				static if (isStaticArray!T || getAttributeValue!NoLength)
+					return value[].byCodeUnit.map!(Serializer!(FilterOut!NoLength).serialize).joiner.array;
+				else
+					return serialize(cast(GetAttributeType!LengthType) value.length) ~ value.byCodeUnit.map!(Serializer_.serialize).joiner.array;
+			}
+			else {
+				static if (isStaticArray!T || getAttributeValue!NoLength)
+					return value[].map!(Serializer!(FilterOut!NoLength).serialize).joiner.array;
+				else
+					return serialize(cast(GetAttributeType!LengthType) value.length) ~ value.map!(Serializer_.serialize).joiner.array;
+			}
 		}
 		ubyte[] serialize(T)(T value) if(is(T == class) || is(T == struct)) {
 			static if(__traits(hasMember, T, "serialize")) {
