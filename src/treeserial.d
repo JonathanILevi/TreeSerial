@@ -4,6 +4,8 @@ import std.traits;
 import std.meta;
 import std.bitmanip;
 
+import std.typecons;
+
 import std.algorithm;
 import std.range;
 import std.conv;
@@ -88,7 +90,14 @@ template Serializer(Attributes...) {
 					return serialize(cast(GetAttributeType!LengthType) value.length) ~ value.map!(Serializer_.serialize).joiner.array;
 			}
 		}
-		ubyte[] serialize(T)(T value) if(is(T == class) || is(T == struct)) {
+		ubyte[] serialize(T)(T value) if(isTuple!T) {
+			import std.stdio;
+			ubyte[] bytes;
+			static foreach (i; 0..value.length)
+				bytes ~= serialize(value[i]);
+			return bytes;
+		}
+		ubyte[] serialize(T)(T value) if((is(T == class) || is(T == struct)) && !isTuple!T) {
 			static if(__traits(hasMember, T, "serialize")) {
 				return value.serialize;
 			}
